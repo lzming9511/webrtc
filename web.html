@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<meta charset="utf-8" />
+<head>
+	<title>Java后端WebSocket的Tomcat实现</title>
+</head>
+<body>
+Welcome<br/><input id="text" type="text"/>
+<button onclick="send()">发送消息</button>
+<hr/>
+<button onclick="closeWebSocket()">关闭WebSocket连接</button>
+<button onclick="connectRome()">连接房间</button>
+<hr/>
+<div id="message"></div>
+<hr/>
+本地视频:
+<video id="myselfVideo" width="640" height="480" autoplay></video>
+<hr/>
+<div id="videoList">
+	<!--<video width="64" height="48" autoplay></video>-->
+</div>
+<br>
+</body>
+
+<script type="text/javascript">
+    var roomID = window.location.href.split('#')[1];
+    var websocket = null;
+    //判断当前浏览器是否支持WebSocket
+    if ('WebSocket' in window) {
+        websocket = new WebSocket("ws://localhost:8888/webrtc?roomID="+roomID);
+    }
+    else {
+        alert('当前浏览器 Not support websocket')
+    }
+
+    //连接发生错误的回调方法
+    websocket.onerror = function () {
+        setMessageInnerHTML("WebSocket连接发生错误");
+    };
+
+    //连接成功建立的回调方法
+    websocket.onopen = function () {
+        setMessageInnerHTML("WebSocket连接成功");
+    }
+
+    //兼容不同浏览器获取到用户媒体对象
+    var getUserMedia = (navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia || navigator.mediaDevices.getUserMedia);
+
+    // //兼容不同浏览器
+    // var SessionDescription = (window.RTCSessionDescription || window.mozRTCSessionDescription || window.webkitRTCSessionDescription);
+    //兼容不同浏览器客户端之间的连接
+    //var pc = new (window.PeerConnection || window.webkitPeerConnection00 || window.webkitRTCPeerConnection || window.mozRTCPeerConnection);
+
+
+
+
+    var localhostStream=null;
+    // 获取本地音频和视频流
+    getUserMedia.call(navigator,{
+            "audio" : true,
+            "video" : true
+        },
+        function(stream) {
+            //绑定本地媒体流到video标签用于输出
+            document.getElementById('myselfVideo').src = URL
+                .createObjectURL(stream);
+            localhostStream=stream;
+            // //向PeerConnection中加入需要发送的流
+            // pc.addStream(stream);
+
+        }, function(error) {
+            //处理媒体流创建失败错误
+            console.log('getUserMedia error: ' + error);
+        });
+
+    var sessionList=[]
+	var pcList=[]
+    function createPeerConnection(clientID) {
+        //兼容不同浏览器客户端之间的连接
+        pcList[clientID] = new (window.PeerConnection || window.webkitPeerConnection00 || window.webkitRTCPeerConnection || window.mozRTCPeerConnection);
+        //兼容不同浏览器
+        sessionList[clientID] = (window.RTCSessionDescription || window.mozRTCSessionDescription || window.webkitRTCSessionDescription);
+
+        pcList[clientID].addStream(localhostStream);
+        // 发送ICE候选到其他客户端
+        pcList[clientID].onicecandidate = function (event) {
+            if (event.candidate !== null) {
+                websocket.send(JSON.stringify({
+                    "event" : "_ice_candidate",
+                    "clientId" : myID,
+                    "roomID" :roomID,
+					"respon" :clientID,
+                    "data" : {
+                        "candidate" : event.candidate
+                    }
+                }));
+            }
+        };
+        // 如果检测到媒体流连接到本地，将其绑定到一个video标签上输出
+        pcList[clientID].onaddstream = function (event) {
+            var node=document.createElement("video");
+            node.setAttribute("width",640);
+            node.setAttribute("height",480);
+            node.setAttribute("autoplay","autoplay");
+            node.setAttribute("id","video"+clientID);
+            node.setAttribute("src",URL.createObjectURL(event.stream));
+            document.getElementById('videoList').appendChild(node);
+        };
+        //return pcList[clientID];
+    }
+
+
+    var myID=null;
+    var roomUserIDS=[];
+    //接收到消息的回调方法
+    websocket.onmessage = function (event) {
+        var json = JSON.parse(event.data);
+        console.log('onmessage: ', json);
+        //如果是一个ICE的候选，则将其加入到PeerConnection中，否则设定对方的session描述为传递过来的描述
+		if (json.event==="_new_user") {
+		    myID=json.userID;
+		    return;
+		}
+
+        if (json.event==="_user_leave") {
+            let leaveUserID=json.leaveUserId;
+
+            if (pcList[leaveUserID] == null) return
+            pcList[leaveUserID].close();
+            pcList[leaveUserID]=null;
+            sessionList[leaveUserID]=null;
+
+            //移除退出用户的视频源
+            let leaveVideo = document.getElementById("video"+leaveUserID);
+            leaveVideo.parentNode.removeChild(leaveVideo);
+
+            return;
+        }
+
+        if (json.event==="_server_room_user"){
+            roomUserIDS=json.data;
+
+            if (roomUserIDS==null) return
+
+			for (let i=0;i<roomUserIDS.length;i++){
+                let item=roomUserIDS[i];
+
+                if (item==myID) continue
+
+                if (pcList[item]==null){
+                    createPeerConnection(item);
+                    pcList[item].createOffer(function (desc) {
+                        pcList[item].setLocalDescription(desc);
+                        websocket.send(JSON.stringify({
+                            "event" : "_offer",
+                            "clientId" : myID,
+                            "roomID" :roomID,
+                            "respon" :item,
+                            "data" : {
+                                "sdp" : desc
+                            }
+                        }));
+                    }, function(error) {
+                        console.log('Failure callback: ' + error);
+                    });
+                }
+
+			}
+            return;
+        }
+
+
+		var theClientID=json.clientId;
+		
+		if ( theClientID!= myID){
+		    if (pcList[theClientID]==null){
+                createPeerConnection(theClientID);
+			}
+		}else {
+		    return;
+		}
+
+
+		
+		if (json.event === "_ice_candidate") {
+            pcList[theClientID].addIceCandidate(new RTCIceCandidate(json.data.candidate));
+        } else {
+            pcList[theClientID].setRemoteDescription(new sessionList[theClientID](json.data.sdp));
+            // 如果是一个offer，那么需要回复一个answer
+            if (json.event === "_offer") {
+                pcList[theClientID].createAnswer(function (desc) {
+                    pcList[theClientID].setLocalDescription(desc);
+                    websocket.send(JSON.stringify({
+                        "event" : "_answer",
+                        "clientId" : myID,
+                        "respon" :theClientID,
+                        "roomID" :roomID,
+                        "data" : {
+                            "sdp" : desc
+                        }
+                    }));
+                }, function(error) {
+                    console.log('Failure _offer callback: ' + error);
+                });
+            }
+        }
+    };
+
+    //连接关闭的回调方法
+    websocket.onclose = function () {
+        for (let i=0;i<roomUserIDS.length;i++){
+            let item=roomUserIDS[i];
+
+            if (item==myID) continue
+
+            //移除退出用户的视频源
+            let leaveVideo = document.getElementById("video"+item);
+            if (leaveVideo==null) continue
+            leaveVideo.parentNode.removeChild(leaveVideo);
+
+            if (pcList[item]!=null){
+                pcList[item].close();
+                pcList[item]=null;
+                sessionList[item]=null;
+            }
+        }
+        setMessageInnerHTML("WebSocket连接关闭");
+    };
+
+    //监听窗口关闭事件，当窗口关闭时，主动去关闭websocket连接，防止连接还没断开就关闭窗口，server端会抛异常。
+    window.onbeforeunload = function () {
+        closeWebSocket();
+    };
+    //将消息显示在网页上
+    function setMessageInnerHTML(innerHTML) {
+        document.getElementById('message').innerHTML += innerHTML + '<br/>';
+    }
+    //关闭WebSocket连接
+    function closeWebSocket() {
+        websocket.close();
+    }
+
+    var connectPc=null;
+    function connectRome() {
+        //如果是发起方则发送一个offer信令
+
+        websocket.send(JSON.stringify({
+            "event" : "_room_users",
+            "clientId" : myID,
+            "roomID" :roomID
+        }));
+
+        return;
+    }
+
+    //发送消息
+    function send() {
+        var message = document.getElementById('text').value;
+        websocket.send(message);
+    }
+
+</script>
+</html>
+
