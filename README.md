@@ -1,11 +1,11 @@
 # webrtc
 webrtc多人在线视频
 
-##webrtc文件夹 
+## webrtc文件夹 
 为idea的spootboot项目，用来启动WebSocket
 
 
-##web.html
+## web.html
 为html静态文件
 
 WebSocket 地址 ws://localhost:8888/webrtc
